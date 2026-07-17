@@ -198,7 +198,6 @@ async def main():
 
             page_num += 1
 
-        input("Press Enter to close the browser...")
         await browser.close()
 
 
