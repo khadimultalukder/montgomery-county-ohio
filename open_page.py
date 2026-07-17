@@ -1,10 +1,10 @@
 import asyncio
-import csv
 import os
 import random
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+import gspread
 
 load_dotenv()
 
@@ -13,7 +13,10 @@ CALENDAR_URL = "https://montgomery.sheriffsaleauction.ohio.gov/index.cfm?ZACTION
 HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
 USERNAME = os.getenv("LOGIN_USERNAME")
 PASSWORD = os.getenv("LOGIN_PASSWORD")
-OUTPUT_CSV = "cases.csv"
+
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "MONTGOMERY")
+GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/service_account.json")
 
 # field name -> xpath on the case detail page
 CASE_FIELDS = {
@@ -28,7 +31,7 @@ CASE_FIELDS = {
     "plaintiff": "//div[@class='bDiv']//td[contains(.,'PLAINTIFF')]/following-sibling::td[1]",
     "sale_status": "//div[@class='ASTAT_MSGB Astat_DATA']",
 }
-CSV_COLUMNS = ["case_id", "case_url"] + list(CASE_FIELDS.keys())
+SHEET_COLUMNS = ["case_id", "case_url"] + list(CASE_FIELDS.keys())
 
 
 async def human_wait(min_sec=1.0, max_sec=2.5):
@@ -72,12 +75,20 @@ async def extract_case_details(case_page):
     return details
 
 
+def connect_google_sheet():
+    """Open the target worksheet using a service account, adding the header row if empty."""
+    gc = gspread.service_account(filename=GOOGLE_SERVICE_ACCOUNT_FILE)
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    worksheet = sh.worksheet(GOOGLE_SHEET_TAB)
+
+    if not worksheet.get_all_values():
+        worksheet.append_row(SHEET_COLUMNS, value_input_option="USER_ENTERED")
+
+    return worksheet
+
+
 async def main():
-    file_exists = os.path.exists(OUTPUT_CSV)
-    csv_file = open(OUTPUT_CSV, "a", newline="", encoding="utf-8")
-    csv_writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS)
-    if not file_exists:
-        csv_writer.writeheader()
+    worksheet = connect_google_sheet()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
@@ -132,8 +143,10 @@ async def main():
                 details = await extract_case_details(case_page)
                 row = {"case_id": case_id, "case_url": case_url, **details}
                 print(row)
-                csv_writer.writerow(row)
-                csv_file.flush()
+                worksheet.append_row(
+                    [row.get(col, "") for col in SHEET_COLUMNS],
+                    value_input_option="USER_ENTERED",
+                )
 
                 await case_page.close()
                 await human_wait(1, 2.5)
@@ -151,8 +164,6 @@ async def main():
 
         input("Press Enter to close the browser...")
         await browser.close()
-
-    csv_file.close()
 
 
 if __name__ == "__main__":
