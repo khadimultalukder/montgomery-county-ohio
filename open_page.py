@@ -51,16 +51,16 @@ async def main():
         await asyncio.sleep(1)
 
         await page.goto("https://montgomery.sheriffsaleauction.ohio.gov/index.cfm?ZACTION=USER&ZMETHOD=CALENDAR")
+        await asyncio.sleep(1)
+        open_case = page.locator("xpath=//div[@class='CALDAYBOX']//div[@role='link']").first
+        await open_case.wait_for(state="visible", timeout=10000)
+        await open_case.click()
+        await asyncio.sleep(1)
 
         page_num = 1
         max_pages = 50  # safety cap so it can't loop forever
         while page_num <= max_pages:
             print(f"Processing calendar page {page_num}")
-
-            open_case = page.locator("xpath=//div[@class='CALDAYBOX']//div[@role='link']").first
-            await open_case.wait_for(state="visible", timeout=10000)
-            await open_case.click()
-            await asyncio.sleep(1)
 
             # TODO: handle the opened case here (extract data, close/back, etc.)
 
