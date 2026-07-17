@@ -195,6 +195,34 @@ async def collect_case_links(page):
     return collected
 
 
+def match_cases_with_sheet(case_list, case_rows):
+    """
+    Compare the freshly collected calendar cases (case_id + auction_sold_ele)
+    against what's already recorded in the sheet (case_id + auction_sold),
+    and return only the cases that still need to be scraped.
+
+    A case is skipped when it's already in the sheet AND either the sheet
+    already has auction_sold recorded, or the calendar is now showing it as
+    sold/resolved (auction_sold_ele) -- in the latter case we don't even need
+    to open a tab to know it's done.
+    """
+    to_scrape = []
+    for case in case_list:
+        case_id = case["case_id"]
+        existing = case_rows.get(case_id)
+
+        already_recorded = bool(existing and existing["auction_sold"])
+        calendar_shows_sold = bool(case.get("auction_sold"))
+
+        if existing and (already_recorded or calendar_shows_sold):
+            logger.info(f"Skipping case {case_id} (auction_sold already recorded)")
+            continue
+
+        to_scrape.append(case)
+
+    return to_scrape
+
+
 async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, case_rows, sheet_state):
     """
     Open a single case in a new tab, extract its details, and write the row.
@@ -276,22 +304,16 @@ async def main():
             logger.info(f"Processing calendar page {auctions_date}")
             await human_wait(1, 2)
 
-            # Phase 1: collect every case link on this page first.
+            # Phase 1: collect every case link (case_id + auction_sold_ele) on this page first.
             case_list = await collect_case_links(page)
 
-            # Phase 2: now scrape them one by one from the static list.
-            total = len(case_list)
-            for idx, case in enumerate(case_list, start=1):
+            # Phase 2: match those against the sheet to find what's left to do.
+            cases_to_scrape = match_cases_with_sheet(case_list, case_rows)
+
+            # Phase 3: scrape only the remaining cases, one by one.
+            total = len(cases_to_scrape)
+            for idx, case in enumerate(cases_to_scrape, start=1):
                 case_id = case["case_id"]
-
-                existing = case_rows.get(case_id)
-                already_recorded = bool(existing and existing["auction_sold"])
-                calendar_shows_sold = bool(case.get("auction_sold"))
-
-                if existing and (already_recorded or calendar_shows_sold):
-                    logger.info(f"[{idx}/{total}] Skipping case {case_id} (auction_sold already recorded)")
-                    continue
-
                 case_url = urljoin(page.url, case["href"])
                 await scrape_case(
                     page, idx, total, case_id, case_url, auctions_date,
