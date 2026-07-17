@@ -30,19 +30,20 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/s
 CASE_FIELDS = {
     "sale_type": "//th[contains(.,'Sale Type')]/following-sibling::td[1]",
     "parcel_id": "//th[contains(.,'Parcel ID')]/following-sibling::td[1]",
-    # some case pages render the address one way, some the other -- try both,
-    # first non-empty match wins
+    # property address is split across two rows: the street on the
+    # "Property Address:" row, and city/state/zip on the very next row --
+    # both parts get joined together into one field
     "property_address": [
         "//th[contains(.,'Property Address')]/following-sibling::td[1]",
-        "//div[@class='bdetails']//tr[contains(.,'Property Address')]/following-sibling::tr[1]/td",
+        "//th[contains(.,'Property Address')]/parent::tr/following-sibling::tr[1]/td[@class='bDat']",
     ],
     "appraised_value": "//th[contains(.,'Appraised Value')]/following-sibling::td[1]",
     "opening_bid": "//th[contains(.,'Opening Bid')]/following-sibling::td[1]",
     "case_status": "//th[contains(.,'Case Status')]/following-sibling::td[1]",
     "defendant": "//div[@class='bDiv']//td[contains(.,'DEFENDANT')]/following-sibling::td[1]",
     "plaintiff": "//div[@class='bDiv']//td[contains(.,'PLAINTIFF')]/following-sibling::td[1]",
-    "Auction Sold": "//div[@class='ASTAT_MSGB Astat_DATA']",
-    "Amount": "//div[@class='ASTAT_MSGD Astat_DATA']",
+    "auction_sold": "//div[@class='ASTAT_MSGB Astat_DATA']",
+    "amount": "//div[@class='ASTAT_MSGD Astat_DATA']",
 }
 SHEET_COLUMNS = ["case_id", "case_url"] + list(CASE_FIELDS.keys())
 
@@ -86,13 +87,10 @@ async def extract_case_details(case_page):
     for field, xpaths in CASE_FIELDS.items():
         xpaths = xpaths if isinstance(xpaths, list) else [xpaths]
 
-        value = ""
-        for xp in xpaths:
-            value = await safe_text(case_page, xp)
-            if value:
-                break
-
-        details[field] = value
+        # for a single xpath this is just that one value; for a list, every
+        # non-empty part gets joined together (e.g. street + city/state/zip)
+        parts = [await safe_text(case_page, xp) for xp in xpaths]
+        details[field] = ", ".join(p for p in parts if p)
     return details
 
 
