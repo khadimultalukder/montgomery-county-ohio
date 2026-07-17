@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import os
 import random
 from urllib.parse import urljoin
@@ -12,6 +13,22 @@ CALENDAR_URL = "https://montgomery.sheriffsaleauction.ohio.gov/index.cfm?ZACTION
 HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
 USERNAME = os.getenv("LOGIN_USERNAME")
 PASSWORD = os.getenv("LOGIN_PASSWORD")
+OUTPUT_CSV = "cases.csv"
+
+# field name -> xpath on the case detail page
+CASE_FIELDS = {
+    "case_number": "//th[contains(.,'Case Number')]/following-sibling::td[1]",
+    "sale_type": "//th[contains(.,'Sale Type')]/following-sibling::td[1]",
+    "parcel_id": "//th[contains(.,'Parcel ID')]/following-sibling::td[1]",
+    "property_address": "//th[contains(.,'Property Address')]/following-sibling::td[1]",
+    "appraised_value": "//th[contains(.,'Appraised Value')]/following-sibling::td[1]",
+    "opening_bid": "//th[contains(.,'Opening Bid')]/following-sibling::td[1]",
+    "case_status": "//th[contains(.,'Case Status')]/following-sibling::td[1]",
+    "defendant": "//div[@class='bDiv']//td[contains(.,'DEFENDANT')]/following-sibling::td[1]",
+    "plaintiff": "//div[@class='bDiv']//td[contains(.,'PLAINTIFF')]/following-sibling::td[1]",
+    "sale_status": "//div[@class='ASTAT_MSGB Astat_DATA']",
+}
+CSV_COLUMNS = ["case_id", "case_url"] + list(CASE_FIELDS.keys())
 
 
 async def human_wait(min_sec=1.0, max_sec=2.5):
@@ -38,7 +55,30 @@ async def click_ok_if_present(page, timeout=3000):
         return False
 
 
+async def safe_text(page, xpath, timeout=3000):
+    """Return the inner text of the first match, or '' if it isn't found in time."""
+    locator = page.locator(f"xpath={xpath}").first
+    try:
+        await locator.wait_for(state="visible", timeout=timeout)
+        return (await locator.inner_text()).strip()
+    except Exception:
+        return ""
+
+
+async def extract_case_details(case_page):
+    details = {}
+    for field, xpath in CASE_FIELDS.items():
+        details[field] = await safe_text(case_page, xpath)
+    return details
+
+
 async def main():
+    file_exists = os.path.exists(OUTPUT_CSV)
+    csv_file = open(OUTPUT_CSV, "a", newline="", encoding="utf-8")
+    csv_writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS)
+    if not file_exists:
+        csv_writer.writeheader()
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
         context = await browser.new_context()
@@ -82,14 +122,18 @@ async def main():
                 case_id = (await case_link.inner_text()).strip()
                 case_href = await case_link.get_attribute("href")
                 case_url = urljoin(page.url, case_href)
-                print(f"Opening case: {case_id} | {case_url}")
+                print(f"Opening case: {case_id}")
 
                 await human_wait(0.5, 1.5)
                 case_page = await page.context.new_page()
                 await case_page.goto(case_url)
                 await human_wait(1.5, 3)
 
-                # TODO: extract case details from case_page here
+                details = await extract_case_details(case_page)
+                row = {"case_id": case_id, "case_url": case_url, **details}
+                print(row)
+                csv_writer.writerow(row)
+                csv_file.flush()
 
                 await case_page.close()
                 await human_wait(1, 2.5)
@@ -107,6 +151,8 @@ async def main():
 
         input("Press Enter to close the browser...")
         await browser.close()
+
+    csv_file.close()
 
 
 if __name__ == "__main__":
