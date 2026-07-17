@@ -247,21 +247,22 @@ def match_cases_with_sheet(case_list, case_rows):
     against what's already recorded in the sheet (case_id + auction_sold),
     and return only the cases that still need to be scraped.
 
-    A case is skipped ONLY when both values are available (non-empty) AND
-    they match exactly -- meaning nothing has changed since the last scrape.
-    If the case isn't in the sheet yet, or either value is blank, or the
-    text differs (e.g. a reschedule adds a second date), it still needs to
-    be scraped so the row gets created/updated with the new information.
+    A case is skipped when it's already in the sheet AND its auction_sold
+    value is unchanged -- including the case where it's still blank on both
+    sides (not yet sold), so an unresolved case doesn't get re-scraped and
+    duplicated every time it's seen again. It only gets re-scraped and
+    appended as a new row when the auction_sold text actually changes (e.g.
+    blank -> sold, or a reschedule adds a second date), or when it's not in
+    the sheet at all yet.
     """
     to_scrape = []
     for case in case_list:
         case_id = case["case_id"]
         calendar_auction_sold = case.get("auction_sold", "")
         existing = case_rows.get(case_id)
-        sheet_auction_sold = existing["auction_sold"] if existing else ""
 
-        if existing and calendar_auction_sold and sheet_auction_sold and calendar_auction_sold == sheet_auction_sold:
-            logger.info(f"Skipping case {case_id} (auction_sold unchanged: {calendar_auction_sold})")
+        if existing and calendar_auction_sold == existing["auction_sold"]:
+            logger.info(f"Skipping case {case_id} (auction_sold unchanged: {calendar_auction_sold!r})")
             continue
 
         to_scrape.append(case)
