@@ -21,6 +21,7 @@ SEL_LOGIN_BUTTON = "//div[@id='LogButton']"
 SEL_OK_BUTTON = "xpath=//input[@value='OK']"
 SEL_OPEN_CASE = "xpath=//div[@class='CALDAYBOX']//div[@role='link']"
 SEL_NEXT_PAGE = "xpath=//div[@class='BLHeaderNext BLArrow']//a"
+SEL_CASE_LINKS = "xpath=//td[@class='AD_DTA']/a[1]"
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -53,23 +54,47 @@ async def open_first_case(page):
     await open_case.click()
     await asyncio.sleep(1)
 
+    # TODO: handle the opened case here (extract data, close/back, etc.)
+
+
+async def open_case_in_new_tab(page, case_link):
+    """Click a case link, capturing the new tab it opens, and return that page + case id."""
+    case_id = (await case_link.inner_text()).strip()
+
+    async with page.context.expect_page() as new_page_info:
+        await case_link.click()
+    case_page = await new_page_info.value
+    await case_page.wait_for_load_state()
+
+    return case_page, case_id
+
+
+async def extract_cases(page):
+    cases = page.locator(SEL_CASE_LINKS)
+    count = await cases.count()
+    print(f"Found {count} cases")
+
+    for i in range(count):
+        case_link = cases.nth(i)
+        case_page, case_id = await open_case_in_new_tab(page, case_link)
+        print(f"Opened case {case_id}")
+
+        # TODO: extract case details from case_page here
+
+        await case_page.close()
+
 
 async def process_calendar(page):
     print("Opening calendar...")
     await page.goto(CALENDAR_URL)
+
     await open_first_case(page)
-
-
 
     page_num = 1
     while page_num <= MAX_PAGES:
         print(f"Processing calendar page {page_num}")
 
-
-        cases = page.locator("xpath=//td[@class='AD_DTA']/a[1]")
-        count = await cases.count()
-        print(f"Found {count} cases")
-
+        await extract_cases(page)
 
         if not await click_if_present(page, SEL_NEXT_PAGE):
             print("No more pages.")
