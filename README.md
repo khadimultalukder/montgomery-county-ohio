@@ -4,7 +4,7 @@ Logs into the Montgomery County (Ohio) sheriff sale auction site, walks the auct
 
 ## Files
 
-- `scrape_cases.py` — main script. Collects all case links on a calendar page first, then scrapes each one individually (avoids issues with rows shifting/hiding mid-scrape).
+- `montgomery_scrape_cases.py` — main script. Collects all case links on a calendar page first, then scrapes each one individually (avoids issues with rows shifting/hiding mid-scrape).
 - `.env` — configuration (login, sheet target). Not committed with real secrets — fill in your own values.
 - `requirements.txt` — Python dependencies.
 
@@ -36,13 +36,16 @@ Logs into the Montgomery County (Ohio) sheriff sale auction site, walks the auct
 ## Running
 
 ```
-python scrape_cases.py
+python montgomery_scrape_cases.py
 ```
 
 The script will:
 - Log in (typing credentials with human-like delays, dismissing confirmation popups).
 - Go to the auction calendar and open the first day with listings.
-- On each calendar page: collect every case's ID and link, skip any case already present in the sheet (matched by `case_id` in column A), then open each remaining case in a new tab, extract its details, and append a row.
+- On each calendar page: collect every case's ID and link, then for each case:
+  - if it's already in the sheet **and** `auction_sold` has a value, skip it (considered resolved/final),
+  - if it's already in the sheet but `auction_sold` is still blank, re-scrape it and update that row in place,
+  - otherwise scrape it and append a new row.
 - Move to the next calendar page and repeat until there are no more pages.
 - Pause with `Press Enter to close the browser...` at the end so you can review the final state before it closes.
 
@@ -56,4 +59,4 @@ The script will:
 
 - `HEADLESS=false` is recommended while testing so you can see what's happening; set to `true` for unattended runs.
 - The script logs to the console in the format `TIMESTAMP [montgomery] LEVEL: message`. Per-case progress prints as `[n/total] OK` or `[n/total] FAILED - ...` with the reason.
-- Re-running the script is safe — it skips any `case_id` already in the sheet instead of re-scraping it.
+- Re-running the script is safe and resumable — it uses `case_id` + `auction_sold` to decide whether a case is finished (skip), still pending (re-scrape and update in place), or new (append).
