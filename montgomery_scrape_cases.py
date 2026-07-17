@@ -121,46 +121,52 @@ def connect_google_sheet():
 
 def get_existing_rows(worksheet):
     """
-    Return (case_rows, next_row):
-      - case_rows: {case_id: {"row": sheet_row_number, "auction_sold": value}}
-        for every existing row (skipping the header)
+    Return (recorded_keys, next_row):
+      - recorded_keys: a set of (case_id, auction_sold) pairs already present
+        anywhere in the sheet (skipping the header)
       - next_row: the first empty row number, for appending new cases
 
-    Used to resume a run: a case is skipped only once its recorded
-    auction_sold value matches what the calendar currently shows (see
-    match_cases_with_sheet). Otherwise it gets re-scraped and appended as a
-    new row, so the sheet keeps a full history instead of overwriting.
+    Used to resume a run and avoid duplicates: a row only gets written when
+    its exact (case_id, auction_sold) pair -- both read from the case's own
+    detail page -- isn't already recorded. If auction_sold changes (e.g. it
+    finally shows a sold result), that's a new pair and gets appended as a
+    fresh row, keeping a history instead of overwriting.
     """
     all_values = worksheet.get_all_values()
     if not all_values:
-        return {}, 2
+        return set(), 2
 
     header = all_values[0]
     case_id_idx = header.index("case_id") if "case_id" in header else 0
     auction_sold_idx = header.index("auction_sold") if "auction_sold" in header else None
 
-    case_rows = {}
-    for row_num, row in enumerate(all_values[1:], start=2):
+    recorded_keys = set()
+    for row in all_values[1:]:
         case_id = row[case_id_idx] if case_id_idx < len(row) else ""
         if not case_id:
             continue
         auction_sold = ""
         if auction_sold_idx is not None and auction_sold_idx < len(row):
             auction_sold = row[auction_sold_idx]
-        case_rows[case_id] = {"row": row_num, "auction_sold": auction_sold}
+        recorded_keys.add((case_id, auction_sold))
 
-    return case_rows, len(all_values) + 1
+    return recorded_keys, len(all_values) + 1
 
 
 async def collect_case_links(page):
     """
     Read every case row on the current calendar page into plain Python values
-    (case_id + href + the auction_sold status shown right on the calendar)
-    BEFORE opening any tabs. Some rows disappear/reshuffle once you start
-    interacting with the page (opening tabs, session refresh, etc.), so
-    indexing into a live locator mid-loop is unreliable. Collecting
+    (case_id + href) BEFORE opening any tabs. Some rows disappear/reshuffle
+    once you start interacting with the page (opening tabs, session refresh,
+    etc.), so indexing into a live locator mid-loop is unreliable. Collecting
     everything up front avoids that: once it's a Python list, the DOM
     changing underneath us can't affect it anymore.
+
+    Note: the calendar row's own status widget (ASTAT_MSGB) is NOT used to
+    decide whether to skip a case -- it's blank for active/not-yet-sold
+    cases while the case's detail page already shows a scheduled date, so
+    comparing the two caused every active case to look "changed" and get
+    duplicated. The real dedup check happens after scraping, in scrape_case.
     """
     cases = page.locator("xpath=//div[@class='AUCTION_ITEM']")
     count = await cases.count()
@@ -170,7 +176,6 @@ async def collect_case_links(page):
         try:
             item = cases.nth(i)
             case_ele = item.locator("xpath=.//td[@class='AD_DTA']/a[1]")
-            auction_sold_ele = item.locator("xpath=.//div[@class='ASTAT_MSGB Astat_DATA']")
 
             case_id = (await case_ele.inner_text(timeout=5000)).strip()
             href = await case_ele.get_attribute("href", timeout=5000)
@@ -178,12 +183,7 @@ async def collect_case_links(page):
                 logger.warning(f"Case at index {i} has no href, skipping")
                 continue
 
-            # the calendar row itself already shows a sold/canceled status
-            # once the auction has happened -- grab it so we can skip
-            # already-resolved cases without even opening a tab
-            auction_sold = await locator_text(auction_sold_ele, timeout=1500)
-
-            collected.append({"case_id": case_id, "href": href, "auction_sold": auction_sold})
+            collected.append({"case_id": case_id, "href": href})
         except Exception as e:
             logger.warning(f"Could not read case at index {i}, skipping: {e}")
 
@@ -261,41 +261,15 @@ async def append_row_with_retry(worksheet, row_values, attempts=3, base_delay=2)
             delay *= 2
 
 
-def match_cases_with_sheet(case_list, case_rows):
+async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, recorded_keys, sheet_state):
     """
-    Compare the freshly collected calendar cases (case_id + auction_sold_ele)
-    against what's already recorded in the sheet (case_id + auction_sold),
-    and return only the cases that still need to be scraped.
-
-    A case is skipped when it's already in the sheet AND its auction_sold
-    value is unchanged -- including the case where it's still blank on both
-    sides (not yet sold), so an unresolved case doesn't get re-scraped and
-    duplicated every time it's seen again. It only gets re-scraped and
-    appended as a new row when the auction_sold text actually changes (e.g.
-    blank -> sold, or a reschedule adds a second date), or when it's not in
-    the sheet at all yet.
-    """
-    to_scrape = []
-    for case in case_list:
-        case_id = case["case_id"]
-        calendar_auction_sold = case.get("auction_sold", "")
-        existing = case_rows.get(case_id)
-
-        if existing and calendar_auction_sold == existing["auction_sold"]:
-            logger.info(f"Skipping case {case_id} (auction_sold unchanged: {calendar_auction_sold!r})")
-            continue
-
-        to_scrape.append(case)
-
-    return to_scrape
-
-
-async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, case_rows, sheet_state):
-    """
-    Open a single case in a new tab, extract its details, and append a new
-    row for it. Cases are always appended (never overwritten) so re-scraping
-    a case whose status changed (e.g. rescheduled to a new date) keeps a full
-    history trail in the sheet instead of losing the previous entry.
+    Open a single case in a new tab and extract its details. The row is only
+    written if this exact (case_id, auction_sold) pair -- both from the
+    detail page itself -- isn't already in the sheet; this is the real dedup
+    check, done AFTER scraping so it compares like-for-like data instead of
+    the unreliable calendar-row status. If auction_sold has genuinely
+    changed since the last time this case was recorded, it's appended as a
+    new row, keeping a history instead of overwriting.
     """
     case_page = None
     try:
@@ -305,16 +279,21 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 
         details = await extract_case_details(case_page)
         row = {"case_id": case_id, "case_url": case_url, "auction_date": auction_date, **details}
-        row_values = [row.get(col, "") for col in SHEET_COLUMNS]
+        auction_sold = row.get("auction_sold", "")
+        key = (case_id, auction_sold)
 
-        target_row = sheet_state["next_row"]
+        if key in recorded_keys:
+            logger.info(f"[{idx}/{total}] Skipping case {case_id} (auction_sold unchanged: {auction_sold!r})")
+            return
+
+        row_values = [row.get(col, "") for col in SHEET_COLUMNS]
         await append_row_with_retry(worksheet, row_values)
         sheet_state["next_row"] += 1
 
-        # keep case_rows current so match_cases_with_sheet doesn't append
-        # another duplicate later in this same run if the case reappears
-        # unchanged on a later calendar page
-        case_rows[case_id] = {"row": target_row, "auction_sold": row.get("auction_sold", "")}
+        # remember this pair so a duplicate encounter later in this same run
+        # (e.g. the case shows up again on another calendar page) gets
+        # skipped instead of appended again
+        recorded_keys.add(key)
         logger.info(f"[{idx}/{total}] OK")
     except Exception as e:
         logger.warning(f"[{idx}/{total}] FAILED - case_id={case_id} url={case_url} error={e}")
@@ -326,7 +305,7 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 
 async def main():
     worksheet = connect_google_sheet()
-    case_rows, next_row = get_existing_rows(worksheet)
+    recorded_keys, next_row = get_existing_rows(worksheet)
     sheet_state = {"next_row": next_row}
 
     async with async_playwright() as p:
@@ -365,21 +344,19 @@ async def main():
             logger.info(f"Processing calendar page {auctions_date}")
             await human_wait(1, 2)
 
-            # Phase 1: collect every case link (case_id + auction_sold_ele) for this
+            # Phase 1: collect every case link (case_id + href) for this
             # calendar day, walking the case list's own pagination if it has one.
             case_list = await collect_all_cases_for_day(page)
 
-            # Phase 2: match those against the sheet to find what's left to do.
-            cases_to_scrape = match_cases_with_sheet(case_list, case_rows)
-
-            # Phase 3: scrape only the remaining cases, one by one.
-            total = len(cases_to_scrape)
-            for idx, case in enumerate(cases_to_scrape, start=1):
+            # Phase 2: scrape each case; scrape_case itself decides whether to
+            # write based on (case_id, auction_sold) already being recorded.
+            total = len(case_list)
+            for idx, case in enumerate(case_list, start=1):
                 case_id = case["case_id"]
                 case_url = urljoin(page.url, case["href"])
                 await scrape_case(
                     page, idx, total, case_id, case_url, auctions_date,
-                    worksheet, case_rows, sheet_state,
+                    worksheet, recorded_keys, sheet_state,
                 )
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
