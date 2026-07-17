@@ -62,19 +62,34 @@ async def human_type(locator, text):
 
 
 async def click_ok_if_present(page, timeout=3000):
-    ok_button = page.locator("xpath=//input[@value='OK']").first
-    try:
-        await ok_button.wait_for(state="visible", timeout=timeout)
-        await human_wait(0.3, 0.8)
-        await ok_button.click()
-        return True
-    except Exception:
-        return False
+    xpaths = [
+        "xpath=//input[@value='OK']",
+        "xpath=//input[@value='Ok']",
+    ]
+    for xp in xpaths:
+        ok_button = page.locator(xp).first
+        try:
+            await ok_button.wait_for(state="visible", timeout=timeout)
+            await human_wait(0.3, 0.8)
+            await ok_button.click()
+            return True
+        except Exception:
+            continue
+    return False
 
 
 async def safe_text(page, xpath, timeout=3000):
     """Return the inner text of the first match, or '' if it isn't found in time."""
     locator = page.locator(f"xpath={xpath}").first
+    try:
+        await locator.wait_for(state="visible", timeout=timeout)
+        return (await locator.inner_text()).strip()
+    except Exception:
+        return ""
+
+
+async def locator_text(locator, timeout=2000):
+    """Return the inner text of an already-scoped locator, or '' if it isn't there in time."""
     try:
         await locator.wait_for(state="visible", timeout=timeout)
         return (await locator.inner_text()).strip()
@@ -144,25 +159,35 @@ def get_existing_rows(worksheet):
 async def collect_case_links(page):
     """
     Read every case row on the current calendar page into plain Python values
-    (case_id + href) BEFORE opening any tabs. Some rows disappear/reshuffle
-    once you start interacting with the page (opening tabs, session refresh,
-    etc.), so indexing into a live locator mid-loop is unreliable. Collecting
+    (case_id + href + the auction_sold status shown right on the calendar)
+    BEFORE opening any tabs. Some rows disappear/reshuffle once you start
+    interacting with the page (opening tabs, session refresh, etc.), so
+    indexing into a live locator mid-loop is unreliable. Collecting
     everything up front avoids that: once it's a Python list, the DOM
     changing underneath us can't affect it anymore.
     """
-    cases = page.locator("xpath=//td[@class='AD_DTA']/a[1]")
+    cases = page.locator("xpath=//div[@class='AUCTION_ITEM']")
     count = await cases.count()
 
     collected = []
     for i in range(count):
         try:
-            link = cases.nth(i)
-            case_id = (await link.inner_text(timeout=5000)).strip()
-            href = await link.get_attribute("href", timeout=5000)
+            item = cases.nth(i)
+            case_ele = item.locator("xpath=.//td[@class='AD_DTA']/a[1]")
+            auction_sold_ele = item.locator("xpath=.//div[@class='ASTAT_MSGB Astat_DATA']")
+
+            case_id = (await case_ele.inner_text(timeout=5000)).strip()
+            href = await case_ele.get_attribute("href", timeout=5000)
             if not href:
                 logger.warning(f"Case at index {i} has no href, skipping")
                 continue
-            collected.append({"case_id": case_id, "href": href})
+
+            # the calendar row itself already shows a sold/canceled status
+            # once the auction has happened -- grab it so we can skip
+            # already-resolved cases without even opening a tab
+            auction_sold = await locator_text(auction_sold_ele, timeout=1500)
+
+            collected.append({"case_id": case_id, "href": href, "auction_sold": auction_sold})
         except Exception as e:
             logger.warning(f"Could not read case at index {i}, skipping: {e}")
 
@@ -260,7 +285,10 @@ async def main():
                 case_id = case["case_id"]
 
                 existing = case_rows.get(case_id)
-                if existing and existing["auction_sold"]:
+                already_recorded = bool(existing and existing["auction_sold"])
+                calendar_shows_sold = bool(case.get("auction_sold"))
+
+                if existing and (already_recorded or calendar_shows_sold):
                     logger.info(f"[{idx}/{total}] Skipping case {case_id} (auction_sold already recorded)")
                     continue
 
