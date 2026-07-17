@@ -42,9 +42,11 @@ async def login(page):
     await page.locator(SEL_USERNAME).fill(USERNAME)
     await page.locator(SEL_PASSWORD).fill(PASSWORD)
     await page.locator(SEL_LOGIN_BUTTON).click()
+    await asyncio.sleep(2)
 
     # dismiss up to two confirmation popups that may appear after submit
     await click_if_present(page, SEL_OK_BUTTON)
+    await asyncio.sleep(2)
     await click_if_present(page, SEL_OK_BUTTON)
 
 
@@ -54,7 +56,6 @@ async def open_first_case(page):
     await open_case.click()
     await asyncio.sleep(1)
 
-    # TODO: handle the opened case here (extract data, close/back, etc.)
 
 
 async def open_case_in_new_tab(page, case_link):
