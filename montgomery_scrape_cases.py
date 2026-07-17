@@ -241,6 +241,26 @@ async def collect_all_cases_for_day(page):
     return all_cases
 
 
+async def append_row_with_retry(worksheet, row_values, attempts=3, base_delay=2):
+    """
+    Append a row to the sheet, retrying with backoff on transient failures
+    (e.g. sheets.googleapis.com read timeouts). Re-raises the last error if
+    every attempt fails, so the caller's existing error handling still logs
+    it as a genuine failure.
+    """
+    delay = base_delay
+    for attempt in range(1, attempts + 1):
+        try:
+            worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+            return
+        except Exception as e:
+            if attempt == attempts:
+                raise
+            logger.warning(f"Sheet write failed (attempt {attempt}/{attempts}): {e} -- retrying in {delay}s")
+            await asyncio.sleep(delay)
+            delay *= 2
+
+
 def match_cases_with_sheet(case_list, case_rows):
     """
     Compare the freshly collected calendar cases (case_id + auction_sold_ele)
@@ -288,7 +308,7 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
         row_values = [row.get(col, "") for col in SHEET_COLUMNS]
 
         target_row = sheet_state["next_row"]
-        worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+        await append_row_with_retry(worksheet, row_values)
         sheet_state["next_row"] += 1
 
         # keep case_rows current so match_cases_with_sheet doesn't append
