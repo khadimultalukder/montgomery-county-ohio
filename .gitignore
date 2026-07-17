@@ -1,0 +1,16 @@
+
+
+# Runtime output (not needed in the repo, regenerated automatically)
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
