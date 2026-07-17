@@ -131,26 +131,25 @@ async def collect_case_links(page):
     return collected
 
 
-async def scrape_case(page, case_id, case_url, worksheet, existing_case_ids):
+async def scrape_case(page, idx, total, case_id, case_url, worksheet, existing_case_ids):
     """Open a single case in a new tab, extract its details, and write the row."""
     case_page = None
     try:
-        logger.info(f"Opening case: {case_id}")
         case_page = await page.context.new_page()
         await case_page.goto(case_url)
         await human_wait(1.5, 3)
 
         details = await extract_case_details(case_page)
         row = {"case_id": case_id, "case_url": case_url, **details}
-        logger.info(row)
 
         worksheet.append_row(
             [row.get(col, "") for col in SHEET_COLUMNS],
             value_input_option="USER_ENTERED",
         )
         existing_case_ids.add(case_id)
+        logger.info(f"[{idx}/{total}] OK")
     except Exception as e:
-        logger.warning(f"Failed on case {case_id}, skipping: {e}")
+        logger.warning(f"[{idx}/{total}] FAILED - case_id={case_id} url={case_url} error={e}")
     finally:
         if case_page is not None and not case_page.is_closed():
             await case_page.close()
@@ -199,15 +198,16 @@ async def main():
             case_list = await collect_case_links(page)
 
             # Phase 2: now scrape them one by one from the static list.
-            for case in case_list:
+            total = len(case_list)
+            for idx, case in enumerate(case_list, start=1):
                 case_id = case["case_id"]
 
                 if case_id in existing_case_ids:
-                    logger.info(f"Skipping case {case_id} (already in sheet)")
+                    logger.info(f"[{idx}/{total}] Skipping case {case_id} (already in sheet)")
                     continue
 
                 case_url = urljoin(page.url, case["href"])
-                await scrape_case(page, case_id, case_url, worksheet, existing_case_ids)
+                await scrape_case(page, idx, total, case_id, case_url, worksheet, existing_case_ids)
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
             if await next_button.is_visible():
