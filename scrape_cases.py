@@ -45,7 +45,7 @@ CASE_FIELDS = {
     "auction_sold": "//div[@class='ASTAT_MSGB Astat_DATA']",
     "amount": "//div[@class='ASTAT_MSGD Astat_DATA']",
 }
-SHEET_COLUMNS = ["case_id", "case_url"] + list(CASE_FIELDS.keys())
+SHEET_COLUMNS = ["case_id", "case_url", "auction_date"] + list(CASE_FIELDS.keys())
 
 
 async def human_wait(min_sec=1.0, max_sec=2.5):
@@ -142,7 +142,7 @@ async def collect_case_links(page):
     return collected
 
 
-async def scrape_case(page, idx, total, case_id, case_url, worksheet, existing_case_ids):
+async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, existing_case_ids):
     """Open a single case in a new tab, extract its details, and write the row."""
     case_page = None
     try:
@@ -151,7 +151,7 @@ async def scrape_case(page, idx, total, case_id, case_url, worksheet, existing_c
         await human_wait(1.5, 3)
 
         details = await extract_case_details(case_page)
-        row = {"case_id": case_id, "case_url": case_url, **details}
+        row = {"case_id": case_id, "case_url": case_url, "auction_date": auction_date, **details}
 
         worksheet.append_row(
             [row.get(col, "") for col in SHEET_COLUMNS],
@@ -200,9 +200,12 @@ async def main():
         await open_case.click()
         await human_wait(1, 2)
 
-        page_num = 1
-        while page_num <= 50:
-            logger.info(f"Processing calendar page {page_num}")
+
+        while True:
+            date_element = page.locator("xpath=//div[@class='BLHeaderDateDisplay']")
+            auctions_date = (await date_element.inner_text()).strip()
+
+            logger.info(f"Processing calendar page {auctions_date}")
             await human_wait(1, 2)
 
             # Phase 1: collect every case link on this page first.
@@ -218,7 +221,7 @@ async def main():
                     continue
 
                 case_url = urljoin(page.url, case["href"])
-                await scrape_case(page, idx, total, case_id, case_url, worksheet, existing_case_ids)
+                await scrape_case(page, idx, total, case_id, case_url, auctions_date, worksheet, existing_case_ids)
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
             if await next_button.is_visible():
@@ -229,9 +232,6 @@ async def main():
                 logger.info("No more pages.")
                 break
 
-            page_num += 1
-
-        input("Press Enter to close the browser...")
         await browser.close()
 
 
