@@ -145,33 +145,47 @@ async def main():
             logger.info(f"Found {count} cases")
 
             for i in range(count):
-                case_link = cases.nth(i)
-                case_id = (await case_link.inner_text()).strip()
+                case_page = None
+                try:
+                    case_link = cases.nth(i)
+                    case_id = (await case_link.inner_text(timeout=5000)).strip()
 
-                if case_id in existing_case_ids:
-                    logger.info(f"Skipping case {case_id} (already in sheet)")
-                    continue
+                    if case_id in existing_case_ids:
+                        logger.info(f"Skipping case {case_id} (already in sheet)")
+                        continue
 
-                case_href = await case_link.get_attribute("href")
-                case_url = urljoin(page.url, case_href)
-                logger.info(f"Opening case: {case_id}")
+                    case_href = await case_link.get_attribute("href", timeout=5000)
+                    case_url = urljoin(page.url, case_href)
+                    logger.info(f"Opening case: {case_id}")
 
-                await human_wait(0.5, 1.5)
-                case_page = await page.context.new_page()
-                await case_page.goto(case_url)
-                await human_wait(1.5, 3)
+                    await human_wait(0.5, 1.5)
+                    case_page = await page.context.new_page()
+                    await case_page.goto(case_url)
+                    await human_wait(1.5, 3)
 
-                details = await extract_case_details(case_page)
-                row = {"case_id": case_id, "case_url": case_url, **details}
-                logger.info(row)
-                worksheet.append_row(
-                    [row.get(col, "") for col in SHEET_COLUMNS],
-                    value_input_option="USER_ENTERED",
-                )
-                existing_case_ids.add(case_id)
+                    details = await extract_case_details(case_page)
+                    row = {"case_id": case_id, "case_url": case_url, **details}
+                    logger.info(row)
+                    worksheet.append_row(
+                        [row.get(col, "") for col in SHEET_COLUMNS],
+                        value_input_option="USER_ENTERED",
+                    )
+                    existing_case_ids.add(case_id)
+                except Exception as e:
+                    logger.warning(f"Failed on case index {i}, skipping: {e}")
 
-                await case_page.close()
-                await human_wait(1, 2.5)
+                    # the calendar tab can drop out from under us (session/tab
+                    # behavior) -- if so, go back to the calendar and stop
+                    # this page's loop early rather than hammering a dead page
+                    if CALENDAR_URL not in page.url:
+                        logger.warning("Calendar tab navigated away, returning to it")
+                        await page.goto(CALENDAR_URL)
+                        await human_wait(1.5, 3)
+                        break
+                finally:
+                    if case_page is not None and not case_page.is_closed():
+                        await case_page.close()
+                    await human_wait(1, 2.5)
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
             if await next_button.is_visible():
