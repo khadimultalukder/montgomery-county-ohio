@@ -1,9 +1,7 @@
 import asyncio
 import os
-
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
-from watchfiles import awatch
 
 load_dotenv()
 
