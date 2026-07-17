@@ -61,8 +61,10 @@ async def main():
         max_pages = 50  # safety cap so it can't loop forever
         while page_num <= max_pages:
             print(f"Processing calendar page {page_num}")
-
-            # TODO: handle the opened case here (extract data, close/back, etc.)
+            
+            case_table =  page.locator("xpath=//div[@aria-label='Auction Details']")
+            count = await case_table.count()
+            print(f"Found {count} cases")
 
             moved_to_next = await click_next_page(page)
             if not moved_to_next:
