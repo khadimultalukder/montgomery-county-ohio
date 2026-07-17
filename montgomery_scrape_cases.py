@@ -78,16 +78,6 @@ async def click_ok_if_present(page, timeout=3000):
     return False
 
 
-async def safe_text(page, xpath, timeout=3000):
-    """Return the inner text of the first match, or '' if it isn't found in time."""
-    locator = page.locator(f"xpath={xpath}").first
-    try:
-        await locator.wait_for(state="visible", timeout=timeout)
-        return (await locator.inner_text()).strip()
-    except Exception:
-        return ""
-
-
 async def locator_text(locator, timeout=2000):
     """Return the inner text of an already-scoped locator, or '' if it isn't there in time."""
     try:
@@ -95,6 +85,11 @@ async def locator_text(locator, timeout=2000):
         return (await locator.inner_text()).strip()
     except Exception:
         return ""
+
+
+async def safe_text(page, xpath, timeout=3000):
+    """Return the inner text of the first match for an xpath on `page`, or '' if not found in time."""
+    return await locator_text(page.locator(f"xpath={xpath}").first, timeout=timeout)
 
 
 async def extract_case_details(case_page):
@@ -129,11 +124,10 @@ def get_existing_rows(worksheet):
         for every existing row (skipping the header)
       - next_row: the first empty row number, for appending new cases
 
-    Used to resume a run: a case is only treated as "done" once it has an
-    auction_sold value recorded. If a case is already in the sheet but
-    auction_sold is still blank (the sale hadn't happened yet last time we
-    scraped it), it gets re-scraped and that row is updated in place instead
-    of skipping it or adding a duplicate row.
+    Used to resume a run: a case is skipped only once its recorded
+    auction_sold value matches what the calendar currently shows (see
+    match_cases_with_sheet). Otherwise it gets re-scraped and appended as a
+    new row, so the sheet keeps a full history instead of overwriting.
     """
     all_values = worksheet.get_all_values()
     if not all_values:
@@ -290,7 +284,6 @@ async def main():
         await human_wait(0.5, 1.2)
         await open_case.click()
         await human_wait(1, 2)
-
 
         while True:
             date_element = page.locator("xpath=//div[@class='BLHeaderDateDisplay']")
