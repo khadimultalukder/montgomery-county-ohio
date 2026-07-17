@@ -1,3 +1,5 @@
+# Secrets / credentials — never commit these
+config/service_account.json
 
 
 # Runtime output (not needed in the repo, regenerated automatically)
