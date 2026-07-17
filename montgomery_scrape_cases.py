@@ -107,10 +107,38 @@ def connect_google_sheet():
     return worksheet
 
 
-def get_existing_case_ids(worksheet):
-    """Return the set of case_id values already recorded (column A), skipping the header row."""
-    values = worksheet.col_values(1)
-    return set(values[1:]) if values else set()
+def get_existing_rows(worksheet):
+    """
+    Return (case_rows, next_row):
+      - case_rows: {case_id: {"row": sheet_row_number, "auction_sold": value}}
+        for every existing row (skipping the header)
+      - next_row: the first empty row number, for appending new cases
+
+    Used to resume a run: a case is only treated as "done" once it has an
+    auction_sold value recorded. If a case is already in the sheet but
+    auction_sold is still blank (the sale hadn't happened yet last time we
+    scraped it), it gets re-scraped and that row is updated in place instead
+    of skipping it or adding a duplicate row.
+    """
+    all_values = worksheet.get_all_values()
+    if not all_values:
+        return {}, 2
+
+    header = all_values[0]
+    case_id_idx = header.index("case_id") if "case_id" in header else 0
+    auction_sold_idx = header.index("auction_sold") if "auction_sold" in header else None
+
+    case_rows = {}
+    for row_num, row in enumerate(all_values[1:], start=2):
+        case_id = row[case_id_idx] if case_id_idx < len(row) else ""
+        if not case_id:
+            continue
+        auction_sold = ""
+        if auction_sold_idx is not None and auction_sold_idx < len(row):
+            auction_sold = row[auction_sold_idx]
+        case_rows[case_id] = {"row": row_num, "auction_sold": auction_sold}
+
+    return case_rows, len(all_values) + 1
 
 
 async def collect_case_links(page):
@@ -142,8 +170,12 @@ async def collect_case_links(page):
     return collected
 
 
-async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, existing_case_ids):
-    """Open a single case in a new tab, extract its details, and write the row."""
+async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, case_rows, sheet_state):
+    """
+    Open a single case in a new tab, extract its details, and write the row.
+    If this case_id already has a row (previously scraped with auction_sold
+    still blank), update that row in place; otherwise append a new one.
+    """
     case_page = None
     try:
         case_page = await page.context.new_page()
@@ -152,12 +184,22 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 
         details = await extract_case_details(case_page)
         row = {"case_id": case_id, "case_url": case_url, "auction_date": auction_date, **details}
+        row_values = [row.get(col, "") for col in SHEET_COLUMNS]
 
-        worksheet.append_row(
-            [row.get(col, "") for col in SHEET_COLUMNS],
-            value_input_option="USER_ENTERED",
-        )
-        existing_case_ids.add(case_id)
+        existing = case_rows.get(case_id)
+        if existing:
+            target_row = existing["row"]
+            worksheet.update(
+                range_name=f"A{target_row}",
+                values=[row_values],
+                value_input_option="USER_ENTERED",
+            )
+        else:
+            target_row = sheet_state["next_row"]
+            worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+            sheet_state["next_row"] += 1
+
+        case_rows[case_id] = {"row": target_row, "auction_sold": row.get("auction_sold", "")}
         logger.info(f"[{idx}/{total}] OK")
     except Exception as e:
         logger.warning(f"[{idx}/{total}] FAILED - case_id={case_id} url={case_url} error={e}")
@@ -169,7 +211,8 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 
 async def main():
     worksheet = connect_google_sheet()
-    existing_case_ids = get_existing_case_ids(worksheet)
+    case_rows, next_row = get_existing_rows(worksheet)
+    sheet_state = {"next_row": next_row}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
@@ -216,12 +259,16 @@ async def main():
             for idx, case in enumerate(case_list, start=1):
                 case_id = case["case_id"]
 
-                if case_id in existing_case_ids:
-                    logger.info(f"[{idx}/{total}] Skipping case {case_id} (already in sheet)")
+                existing = case_rows.get(case_id)
+                if existing and existing["auction_sold"]:
+                    logger.info(f"[{idx}/{total}] Skipping case {case_id} (auction_sold already recorded)")
                     continue
 
                 case_url = urljoin(page.url, case["href"])
-                await scrape_case(page, idx, total, case_id, case_url, auctions_date, worksheet, existing_case_ids)
+                await scrape_case(
+                    page, idx, total, case_id, case_url, auctions_date,
+                    worksheet, case_rows, sheet_state,
+                )
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
             if await next_button.is_visible():
