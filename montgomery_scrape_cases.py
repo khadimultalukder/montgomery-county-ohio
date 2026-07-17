@@ -217,6 +217,7 @@ async def click_case_list_next_page(page, timeout=3000):
     try:
         await next_arrow.wait_for(state="visible", timeout=timeout)
         await next_arrow.click()
+        await asyncio.sleep(6)
         return True
     except Exception:
         return False
