@@ -225,9 +225,10 @@ def match_cases_with_sheet(case_list, case_rows):
 
 async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, case_rows, sheet_state):
     """
-    Open a single case in a new tab, extract its details, and write the row.
-    If this case_id already has a row (previously scraped with auction_sold
-    still blank), update that row in place; otherwise append a new one.
+    Open a single case in a new tab, extract its details, and append a new
+    row for it. Cases are always appended (never overwritten) so re-scraping
+    a case whose status changed (e.g. rescheduled to a new date) keeps a full
+    history trail in the sheet instead of losing the previous entry.
     """
     case_page = None
     try:
@@ -239,19 +240,13 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
         row = {"case_id": case_id, "case_url": case_url, "auction_date": auction_date, **details}
         row_values = [row.get(col, "") for col in SHEET_COLUMNS]
 
-        existing = case_rows.get(case_id)
-        if existing:
-            target_row = existing["row"]
-            worksheet.update(
-                range_name=f"A{target_row}",
-                values=[row_values],
-                value_input_option="USER_ENTERED",
-            )
-        else:
-            target_row = sheet_state["next_row"]
-            worksheet.append_row(row_values, value_input_option="USER_ENTERED")
-            sheet_state["next_row"] += 1
+        target_row = sheet_state["next_row"]
+        worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+        sheet_state["next_row"] += 1
 
+        # keep case_rows current so match_cases_with_sheet doesn't append
+        # another duplicate later in this same run if the case reappears
+        # unchanged on a later calendar page
         case_rows[case_id] = {"row": target_row, "auction_sold": row.get("auction_sold", "")}
         logger.info(f"[{idx}/{total}] OK")
     except Exception as e:
