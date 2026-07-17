@@ -1,5 +1,6 @@
 import asyncio
 import os
+from urllib.parse import urljoin
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
@@ -62,12 +63,12 @@ async def main():
             for i in range(count):
                 case_link = cases.nth(i)
                 case_id = (await case_link.inner_text()).strip()
+                case_href = await case_link.get_attribute("href")
+                case_url = urljoin(page.url, case_href)
                 print(f"Opening case: {case_id}")
 
-                async with page.context.expect_page() as new_page_info:
-                    await case_link.click()
-                case_page = await new_page_info.value
-                await case_page.wait_for_load_state()
+                case_page = await page.context.new_page()
+                await case_page.goto(case_url)
                 await asyncio.sleep(1)
 
                 # TODO: extract case details from case_page here
