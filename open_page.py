@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import random
 from urllib.parse import urljoin
@@ -7,6 +8,13 @@ from playwright.async_api import async_playwright
 import gspread
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [montgomery] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("montgomery")
 
 URL = os.getenv("TARGET_URL", "https://montgomery.sheriffsaleauction.ohio.gov/index.cfm")
 CALENDAR_URL = "https://montgomery.sheriffsaleauction.ohio.gov/index.cfm?ZACTION=USER&ZMETHOD=CALENDAR"
@@ -20,7 +28,6 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/s
 
 # field name -> xpath on the case detail page
 CASE_FIELDS = {
-    "case_number": "//th[contains(.,'Case Number')]/following-sibling::td[1]",
     "sale_type": "//th[contains(.,'Sale Type')]/following-sibling::td[1]",
     "parcel_id": "//th[contains(.,'Parcel ID')]/following-sibling::td[1]",
     "property_address": "//th[contains(.,'Property Address')]/following-sibling::td[1]",
@@ -29,7 +36,8 @@ CASE_FIELDS = {
     "case_status": "//th[contains(.,'Case Status')]/following-sibling::td[1]",
     "defendant": "//div[@class='bDiv']//td[contains(.,'DEFENDANT')]/following-sibling::td[1]",
     "plaintiff": "//div[@class='bDiv']//td[contains(.,'PLAINTIFF')]/following-sibling::td[1]",
-    "sale_status": "//div[@class='ASTAT_MSGB Astat_DATA']",
+    "Auction Sold": "//div[@class='ASTAT_MSGB Astat_DATA']",
+    "Amount": "//div[@class='ASTAT_MSGD Astat_DATA']",
 }
 SHEET_COLUMNS = ["case_id", "case_url"] + list(CASE_FIELDS.keys())
 
@@ -76,19 +84,27 @@ async def extract_case_details(case_page):
 
 
 def connect_google_sheet():
-    """Open the target worksheet using a service account, adding the header row if empty."""
+    """Open the target worksheet using a service account, adding the header row if missing."""
     gc = gspread.service_account(filename=GOOGLE_SERVICE_ACCOUNT_FILE)
     sh = gc.open_by_key(GOOGLE_SHEET_ID)
     worksheet = sh.worksheet(GOOGLE_SHEET_TAB)
 
-    if not worksheet.get_all_values():
-        worksheet.append_row(SHEET_COLUMNS, value_input_option="USER_ENTERED")
+    existing_rows = worksheet.get_all_values()
+    if not existing_rows or existing_rows[0] != SHEET_COLUMNS:
+        worksheet.insert_row(SHEET_COLUMNS, index=1, value_input_option="USER_ENTERED")
 
     return worksheet
 
 
+def get_existing_case_ids(worksheet):
+    """Return the set of case_id values already recorded (column A), skipping the header row."""
+    values = worksheet.col_values(1)
+    return set(values[1:]) if values else set()
+
+
 async def main():
     worksheet = connect_google_sheet()
+    existing_case_ids = get_existing_case_ids(worksheet)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
@@ -121,19 +137,24 @@ async def main():
 
         page_num = 1
         while page_num <= 50:
-            print(f"Processing calendar page {page_num}")
+            logger.info(f"Processing calendar page {page_num}")
             await human_wait(1, 2)
 
             cases = page.locator("xpath=//td[@class='AD_DTA']/a[1]")
             count = await cases.count()
-            print(f"Found {count} cases")
+            logger.info(f"Found {count} cases")
 
             for i in range(count):
                 case_link = cases.nth(i)
                 case_id = (await case_link.inner_text()).strip()
+
+                if case_id in existing_case_ids:
+                    logger.info(f"Skipping case {case_id} (already in sheet)")
+                    continue
+
                 case_href = await case_link.get_attribute("href")
                 case_url = urljoin(page.url, case_href)
-                print(f"Opening case: {case_id}")
+                logger.info(f"Opening case: {case_id}")
 
                 await human_wait(0.5, 1.5)
                 case_page = await page.context.new_page()
@@ -142,11 +163,12 @@ async def main():
 
                 details = await extract_case_details(case_page)
                 row = {"case_id": case_id, "case_url": case_url, **details}
-                print(row)
+                logger.info(row)
                 worksheet.append_row(
                     [row.get(col, "") for col in SHEET_COLUMNS],
                     value_input_option="USER_ENTERED",
                 )
+                existing_case_ids.add(case_id)
 
                 await case_page.close()
                 await human_wait(1, 2.5)
@@ -157,7 +179,7 @@ async def main():
                 await next_button.click()
                 await human_wait(1.5, 3)
             else:
-                print("No more pages.")
+                logger.info("No more pages.")
                 break
 
             page_num += 1
