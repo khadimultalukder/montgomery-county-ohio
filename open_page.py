@@ -41,7 +41,8 @@ async def click_ok_if_present(page, timeout=3000):
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
-        page = await browser.new_page()
+        context = await browser.new_context()
+        page = await context.new_page()
 
         await page.goto(URL)
         await human_wait(1.5, 3)
@@ -81,7 +82,7 @@ async def main():
                 case_id = (await case_link.inner_text()).strip()
                 case_href = await case_link.get_attribute("href")
                 case_url = urljoin(page.url, case_href)
-                print(f"Opening case: {case_id}")
+                print(f"Opening case: {case_id} | {case_url}")
 
                 await human_wait(0.5, 1.5)
                 case_page = await page.context.new_page()
