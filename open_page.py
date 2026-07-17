@@ -20,6 +20,17 @@ async def click_ok_if_present(page, timeout=3000):
         return False
 
 
+async def click_next_page(page, timeout=3000):
+    """Click the calendar's 'next' pagination arrow if it exists and is visible."""
+    next_arrow = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
+    try:
+        await next_arrow.wait_for(state="visible", timeout=timeout)
+        await next_arrow.click()
+        return True
+    except Exception:
+        return False
+
+
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=HEADLESS)
@@ -41,7 +52,25 @@ async def main():
 
         await page.goto("https://montgomery.sheriffsaleauction.ohio.gov/index.cfm?ZACTION=USER&ZMETHOD=CALENDAR")
 
+        page_num = 1
+        max_pages = 50  # safety cap so it can't loop forever
+        while page_num <= max_pages:
+            print(f"Processing calendar page {page_num}")
 
+            open_case = page.locator("xpath=//div[@class='CALDAYBOX']//div[@role='link']").first
+            await open_case.wait_for(state="visible", timeout=10000)
+            await open_case.click()
+            await asyncio.sleep(1)
+
+            # TODO: handle the opened case here (extract data, close/back, etc.)
+
+            moved_to_next = await click_next_page(page)
+            if not moved_to_next:
+                print("No more pages.")
+                break
+
+            await asyncio.sleep(1)
+            page_num += 1
 
         input("Press Enter to close the browser...")
         await browser.close()
