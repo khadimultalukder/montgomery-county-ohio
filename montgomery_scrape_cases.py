@@ -47,6 +47,8 @@ CASE_FIELDS = {
 }
 SHEET_COLUMNS = ["case_id", "case_url", "auction_date"] + list(CASE_FIELDS.keys())
 
+MAX_CASE_LIST_PAGES = 50  # safety cap so the case-list pagination loop can't run forever
+
 
 async def human_wait(min_sec=1.0, max_sec=2.5):
     """Random pause so actions don't fire at robotic, fixed intervals."""
@@ -189,6 +191,56 @@ async def collect_case_links(page):
     return collected
 
 
+async def get_case_list_max_pages(page):
+    """Read maxCA -- the total number of case-list sub-pages for the current calendar day."""
+    text = await safe_text(page, "//span[@id='maxCA']", timeout=2000)
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return 1
+
+
+async def click_case_list_next_page(page, timeout=3000):
+    """Click the case-list's own pagination arrow (separate from the day-to-day calendar arrow)."""
+    next_arrow = page.locator(
+        "xpath=//div[@class='Head_C']//div[@class='PageFrame'][1]//span[@class='PageRight']"
+    ).first
+    try:
+        await next_arrow.wait_for(state="visible", timeout=timeout)
+        await next_arrow.click()
+        return True
+    except Exception:
+        return False
+
+
+async def collect_all_cases_for_day(page):
+    """
+    The case list for a single calendar day can itself be paginated
+    (maxCA > 1), separate from the day-to-day calendar pagination. Walk
+    every sub-page here and return the combined list of cases, so callers
+    always get every case for the day in one call.
+    """
+    all_cases = []
+    page_num = 1
+
+    while page_num <= MAX_CASE_LIST_PAGES:
+        all_cases.extend(await collect_case_links(page))
+
+        max_pages = await get_case_list_max_pages(page)
+        if max_pages <= 1 or page_num >= max_pages:
+            # maxCA == 1 means there's only one page of cases -- nothing to paginate
+            break
+
+        if not await click_case_list_next_page(page):
+            logger.warning("Case list pagination arrow not found, stopping early")
+            break
+
+        await human_wait(1, 2)
+        page_num += 1
+
+    return all_cases
+
+
 def match_cases_with_sheet(case_list, case_rows):
     """
     Compare the freshly collected calendar cases (case_id + auction_sold_ele)
@@ -292,8 +344,9 @@ async def main():
             logger.info(f"Processing calendar page {auctions_date}")
             await human_wait(1, 2)
 
-            # Phase 1: collect every case link (case_id + auction_sold_ele) on this page first.
-            case_list = await collect_case_links(page)
+            # Phase 1: collect every case link (case_id + auction_sold_ele) for this
+            # calendar day, walking the case list's own pagination if it has one.
+            case_list = await collect_all_cases_for_day(page)
 
             # Phase 2: match those against the sheet to find what's left to do.
             cases_to_scrape = match_cases_with_sheet(case_list, case_rows)
