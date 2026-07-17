@@ -30,7 +30,12 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/s
 CASE_FIELDS = {
     "sale_type": "//th[contains(.,'Sale Type')]/following-sibling::td[1]",
     "parcel_id": "//th[contains(.,'Parcel ID')]/following-sibling::td[1]",
-    "property_address": "//th[contains(.,'Property Address')]/following-sibling::td[1]",
+    # some case pages render the address one way, some the other -- try both,
+    # first non-empty match wins
+    "property_address": [
+        "//th[contains(.,'Property Address')]/following-sibling::td[1]",
+        "//div[@class='bdetails']//tr[contains(.,'Property Address')]/following-sibling::tr[1]/td",
+    ],
     "appraised_value": "//th[contains(.,'Appraised Value')]/following-sibling::td[1]",
     "opening_bid": "//th[contains(.,'Opening Bid')]/following-sibling::td[1]",
     "case_status": "//th[contains(.,'Case Status')]/following-sibling::td[1]",
@@ -78,8 +83,16 @@ async def safe_text(page, xpath, timeout=3000):
 
 async def extract_case_details(case_page):
     details = {}
-    for field, xpath in CASE_FIELDS.items():
-        details[field] = await safe_text(case_page, xpath)
+    for field, xpaths in CASE_FIELDS.items():
+        xpaths = xpaths if isinstance(xpaths, list) else [xpaths]
+
+        value = ""
+        for xp in xpaths:
+            value = await safe_text(case_page, xp)
+            if value:
+                break
+
+        details[field] = value
     return details
 
 
