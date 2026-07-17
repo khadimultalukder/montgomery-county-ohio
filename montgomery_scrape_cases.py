@@ -156,17 +156,19 @@ def get_existing_rows(worksheet):
 async def collect_case_links(page):
     """
     Read every case row on the current calendar page into plain Python values
-    (case_id + href) BEFORE opening any tabs. Some rows disappear/reshuffle
-    once you start interacting with the page (opening tabs, session refresh,
-    etc.), so indexing into a live locator mid-loop is unreliable. Collecting
-    everything up front avoids that: once it's a Python list, the DOM
-    changing underneath us can't affect it anymore.
+    (case_id + href + the calendar's own status widget text) BEFORE opening
+    any tabs. Some rows disappear/reshuffle once you start interacting with
+    the page (opening tabs, session refresh, etc.), so indexing into a live
+    locator mid-loop is unreliable. Collecting everything up front avoids
+    that: once it's a Python list, the DOM changing underneath us can't
+    affect it anymore.
 
-    Note: the calendar row's own status widget (ASTAT_MSGB) is NOT used to
-    decide whether to skip a case -- it's blank for active/not-yet-sold
-    cases while the case's detail page already shows a scheduled date, so
-    comparing the two caused every active case to look "changed" and get
-    duplicated. The real dedup check happens after scraping, in scrape_case.
+    Note: calendar_status is blank for active/not-yet-sold cases -- it's
+    NOT the same value as the detail page's auction_sold field (which
+    already shows the scheduled date even while still active), so it must
+    never be compared directly against a case's recorded auction_sold.
+    It's only used as a cheap "did anything change?" signal -- see
+    should_skip_without_scraping.
     """
     cases = page.locator("xpath=//div[@class='AUCTION_ITEM']")
     count = await cases.count()
@@ -176,6 +178,7 @@ async def collect_case_links(page):
         try:
             item = cases.nth(i)
             case_ele = item.locator("xpath=.//td[@class='AD_DTA']/a[1]")
+            status_ele = item.locator("xpath=.//div[@class='ASTAT_MSGB Astat_DATA']")
 
             case_id = (await case_ele.inner_text(timeout=5000)).strip()
             href = await case_ele.get_attribute("href", timeout=5000)
@@ -183,7 +186,9 @@ async def collect_case_links(page):
                 logger.warning(f"Case at index {i} has no href, skipping")
                 continue
 
-            collected.append({"case_id": case_id, "href": href})
+            calendar_status = await locator_text(status_ele, timeout=1500)
+
+            collected.append({"case_id": case_id, "href": href, "calendar_status": calendar_status})
         except Exception as e:
             logger.warning(f"Could not read case at index {i}, skipping: {e}")
 
@@ -261,7 +266,30 @@ async def append_row_with_retry(worksheet, row_values, attempts=3, base_delay=2)
             delay *= 2
 
 
-async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, recorded_keys, sheet_state):
+def should_skip_without_scraping(case, known_case_ids):
+    """
+    Cheap pre-filter to avoid opening a tab for a case we already know about
+    and that has nothing new to report.
+
+    A case is skipped here ONLY when both are true:
+      - we've already recorded this case_id before (in this run or a
+        previous one), AND
+      - the calendar isn't currently showing any status for it (still
+        blank -- i.e. still just scheduled, nothing has happened)
+
+    This does NOT compare values for equality (that was the earlier bug --
+    calendar_status and auction_sold aren't the same kind of value). It's
+    just "nothing to see here yet." Anything new (unseen case_id) or
+    anything the calendar is now flagging (calendar_status is non-empty --
+    sold, canceled, etc.) still gets a real scrape, and scrape_case's own
+    (case_id, auction_sold) check decides whether that's actually new.
+    """
+    case_id = case["case_id"]
+    calendar_status = case.get("calendar_status", "")
+    return case_id in known_case_ids and not calendar_status
+
+
+async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, recorded_keys, known_case_ids, sheet_state):
     """
     Open a single case in a new tab and extract its details. The row is only
     written if this exact (case_id, auction_sold) pair -- both from the
@@ -290,10 +318,10 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
         await append_row_with_retry(worksheet, row_values)
         sheet_state["next_row"] += 1
 
-        # remember this pair so a duplicate encounter later in this same run
-        # (e.g. the case shows up again on another calendar page) gets
-        # skipped instead of appended again
+        # remember this pair (and case_id) so a duplicate encounter later in
+        # this same run -- or the cheap pre-filter above -- can recognize it
         recorded_keys.add(key)
+        known_case_ids.add(case_id)
         logger.info(f"[{idx}/{total}] OK")
     except Exception as e:
         logger.warning(f"[{idx}/{total}] FAILED - case_id={case_id} url={case_url} error={e}")
@@ -306,6 +334,7 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 async def main():
     worksheet = connect_google_sheet()
     recorded_keys, next_row = get_existing_rows(worksheet)
+    known_case_ids = {case_id for case_id, _ in recorded_keys}
     sheet_state = {"next_row": next_row}
 
     async with async_playwright() as p:
@@ -344,19 +373,28 @@ async def main():
             logger.info(f"Processing calendar page {auctions_date}")
             await human_wait(1, 2)
 
-            # Phase 1: collect every case link (case_id + href) for this
-            # calendar day, walking the case list's own pagination if it has one.
+            # Phase 1: collect every case link (case_id + href + calendar_status)
+            # for this calendar day, walking the case list's own pagination.
             case_list = await collect_all_cases_for_day(page)
 
-            # Phase 2: scrape each case; scrape_case itself decides whether to
+            # Phase 2: cheaply skip cases we already know about that have
+            # nothing new on the calendar -- no tab needed for those.
+            cases_to_scrape = []
+            for case in case_list:
+                if should_skip_without_scraping(case, known_case_ids):
+                    logger.info(f"Skipping case {case['case_id']} (already recorded, nothing new on calendar)")
+                    continue
+                cases_to_scrape.append(case)
+
+            # Phase 3: scrape the rest; scrape_case itself decides whether to
             # write based on (case_id, auction_sold) already being recorded.
-            total = len(case_list)
-            for idx, case in enumerate(case_list, start=1):
+            total = len(cases_to_scrape)
+            for idx, case in enumerate(cases_to_scrape, start=1):
                 case_id = case["case_id"]
                 case_url = urljoin(page.url, case["href"])
                 await scrape_case(
                     page, idx, total, case_id, case_url, auctions_date,
-                    worksheet, recorded_keys, sheet_state,
+                    worksheet, recorded_keys, known_case_ids, sheet_state,
                 )
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
