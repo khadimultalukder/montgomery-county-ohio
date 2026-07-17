@@ -187,6 +187,10 @@ async def collect_case_links(page):
                 continue
 
             calendar_status = await locator_text(status_ele, timeout=1500)
+            # TEMP DEBUG: compare this against the "auction_sold unchanged: ..."
+            # value logged later for the same case_id, to see whether they
+            # actually match or differ (formatting, extra text, etc.)
+            logger.info(f"DEBUG calendar_status for {case_id}: {calendar_status!r}")
 
             collected.append({"case_id": case_id, "href": href, "calendar_status": calendar_status})
         except Exception as e:
