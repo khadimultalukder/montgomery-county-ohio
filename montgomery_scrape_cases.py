@@ -24,6 +24,7 @@ PASSWORD = os.getenv("LOGIN_PASSWORD")
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "MONTGOMERY")
+GOOGLE_SHEET_TOTAL_TAB = os.getenv("GOOGLE_SHEET_TOTAL_TAB", "Total Auctions")
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/service_account.json")
 
 # field name -> xpath on the case detail page
@@ -102,15 +103,26 @@ async def extract_case_details(case_page):
         # for a single xpath this is just that one value; for a list, every
         # non-empty part gets joined together (e.g. street + city/state/zip)
         parts = [await safe_text(case_page, xp) for xp in xpaths]
-        details[field] = ", ".join(p for p in parts if p)
+        value = ", ".join(p for p in parts if p)
+        if field == "defendant":
+            value = value.replace(", et al.", "")
+        details[field] = value
     return details
 
 
-def connect_google_sheet():
-    """Open the target worksheet using a service account, adding the header row if missing."""
+def connect_google_sheet(tab_name):
+    """
+    Open the given worksheet tab using a service account, creating the tab
+    if it doesn't exist yet and adding the header row if missing. Used for
+    both the per-county tab (GOOGLE_SHEET_TAB) and the combined
+    GOOGLE_SHEET_TOTAL_TAB tab -- every scraped row gets written to both.
+    """
     gc = gspread.service_account(filename=GOOGLE_SERVICE_ACCOUNT_FILE)
     sh = gc.open_by_key(GOOGLE_SHEET_ID)
-    worksheet = sh.worksheet(GOOGLE_SHEET_TAB)
+    try:
+        worksheet = sh.worksheet(tab_name)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title=tab_name, rows=1000, cols=len(SHEET_COLUMNS))
 
     existing_rows = worksheet.get_all_values()
     if not existing_rows or existing_rows[0] != SHEET_COLUMNS:
@@ -289,7 +301,7 @@ def should_skip_without_scraping(case, latest_auction_sold):
     return case_id in latest_auction_sold and calendar_status == latest_auction_sold[case_id]
 
 
-async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, recorded_keys, latest_auction_sold, sheet_state):
+async def scrape_case(page, idx, total, case_id, case_url, auction_date, worksheet, total_worksheet, recorded_keys, latest_auction_sold, sheet_state):
     """
     Open a single case in a new tab and extract its details. The row is only
     written if this exact (case_id, auction_sold) pair isn't already in the
@@ -315,6 +327,7 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 
         row_values = [row.get(col, "") for col in SHEET_COLUMNS]
         await append_row_with_retry(worksheet, row_values)
+        await append_row_with_retry(total_worksheet, row_values)
         sheet_state["next_row"] += 1
 
         # remember this pair (and the latest value for this case_id) so a
@@ -332,7 +345,8 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
 
 
 async def main():
-    worksheet = connect_google_sheet()
+    worksheet = connect_google_sheet(GOOGLE_SHEET_TAB)
+    total_worksheet = connect_google_sheet(GOOGLE_SHEET_TOTAL_TAB)
     recorded_keys, latest_auction_sold, next_row = get_existing_rows(worksheet)
     sheet_state = {"next_row": next_row}
 
@@ -393,7 +407,7 @@ async def main():
                 case_url = urljoin(page.url, case["href"])
                 await scrape_case(
                     page, idx, total, case_id, case_url, auctions_date,
-                    worksheet, recorded_keys, latest_auction_sold, sheet_state,
+                    worksheet, total_worksheet, recorded_keys, latest_auction_sold, sheet_state,
                 )
 
             next_button = page.locator("xpath=//div[@class='BLHeaderNext BLArrow']//a").first
