@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import random
+from datetime import date
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
@@ -46,7 +47,7 @@ CASE_FIELDS = {
     "auction_sold": "//div[@class='ASTAT_MSGB Astat_DATA']",
     "amount": "//div[@class='ASTAT_MSGD Astat_DATA']",
 }
-SHEET_COLUMNS = ["case_id", "case_url", "auction_date"] + list(CASE_FIELDS.keys())
+SHEET_COLUMNS = ["case_id", "case_url", "auction_date"] + list(CASE_FIELDS.keys()) + ["scraped_date"]
 
 MAX_CASE_LIST_PAGES = 50  # safety cap so the case-list pagination loop can't run forever
 
@@ -317,7 +318,8 @@ async def scrape_case(page, idx, total, case_id, case_url, auction_date, workshe
         await human_wait(1.5, 3)
 
         details = await extract_case_details(case_page)
-        row = {"case_id": case_id, "case_url": case_url, "auction_date": auction_date, **details}
+        row = {"case_id": case_id, "case_url": case_url, "auction_date": auction_date, **details,
+               "scraped_date": date.today().isoformat()}
         auction_sold = row.get("auction_sold", "")
         key = (case_id, auction_sold)
 
