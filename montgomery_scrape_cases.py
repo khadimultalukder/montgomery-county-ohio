@@ -105,7 +105,7 @@ async def extract_case_details(case_page):
         parts = [await safe_text(case_page, xp) for xp in xpaths]
         value = ", ".join(p for p in parts if p)
         if field == "defendant":
-            value = value.replace(", et al.", "")
+            value = value.replace(" , et al.", "")
         details[field] = value
     return details
 
