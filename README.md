@@ -25,8 +25,11 @@ Logs into the Montgomery County (Ohio) sheriff sale auction site, walks the auct
 
    GOOGLE_SHEET_ID=your_sheet_id
    GOOGLE_SHEET_TAB=MONTGOMERY
+   GOOGLE_SHEET_TOTAL_TAB=Total Auctions
    GOOGLE_SERVICE_ACCOUNT_FILE=config/service_account.json
    ```
+
+   Every scraped row is written to both `GOOGLE_SHEET_TAB` (the per-county tab) and `GOOGLE_SHEET_TOTAL_TAB` (a combined tab across all counties). Both tabs are created automatically if they don't already exist.
 
 3. Google Sheets access:
    - Create a Google Cloud service account with the Sheets API enabled.
