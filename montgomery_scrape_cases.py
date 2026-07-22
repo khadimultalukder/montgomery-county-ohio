@@ -25,7 +25,7 @@ USERNAME = os.getenv("LOGIN_USERNAME")
 PASSWORD = os.getenv("LOGIN_PASSWORD")
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "Franklin Auction")
+GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "Montgomery Auction")
 GOOGLE_SHEET_TOTAL_TAB = os.getenv("GOOGLE_SHEET_TOTAL_TAB", "Total Auctions")
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/service_account.json")
 
