@@ -94,16 +94,13 @@ async def safe_text(page, xpath, timeout=3000):
 def split_city_state_zip(addr):
     if not addr:
         return "", "", ""
-    # collapse newlines/extra whitespace scraped from the page. Format is
-    # always "City, ST 43215" -- comma after city, state as 2 capital
-    # letters, zip as digits only.
     cleaned = re.sub(r"\s+", " ", addr.strip())
     m = re.match(r"^(.*?),\s*([A-Z]{2})\s+(\d+)$", cleaned)
     if not m:
         logger.warning(f"Could not parse city/state/zip from address: {addr!r}")
         return "", "", ""
     city, state, zip_code = m.groups()
-    return city, state.upper(), zip_code
+    return city, state.upper(), zip_code[:5]
 
 
 async def extract_case_details(case_page):
