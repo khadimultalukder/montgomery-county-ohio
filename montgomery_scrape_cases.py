@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 import gspread
+import re
 
 load_dotenv()
 
@@ -15,7 +16,7 @@ logging.basicConfig(
     format="%(asctime)s [montgomery] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("montgomery")
+logger = logging.getLogger("montgomery-scrape_cases")
 
 URL = os.getenv("TARGET_URL", "https://montgomery.sheriffsaleauction.ohio.gov/index.cfm")
 CALENDAR_URL = "https://montgomery.sheriffsaleauction.ohio.gov/index.cfm?ZACTION=USER&ZMETHOD=CALENDAR"
@@ -24,7 +25,7 @@ USERNAME = os.getenv("LOGIN_USERNAME")
 PASSWORD = os.getenv("LOGIN_PASSWORD")
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "MONTGOMERY")
+GOOGLE_SHEET_TAB = os.getenv("GOOGLE_SHEET_TAB", "Franklin Auction")
 GOOGLE_SHEET_TOTAL_TAB = os.getenv("GOOGLE_SHEET_TOTAL_TAB", "Total Auctions")
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/service_account.json")
 
@@ -32,12 +33,8 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "config/s
 CASE_FIELDS = {
     "sale_type": "//th[contains(.,'Sale Type')]/following-sibling::td[1]",
     "parcel_id": "//th[contains(.,'Parcel ID')]/following-sibling::td[1]",
-    # property address is split across two rows: the street on the
-    # "Property Address:" row, and city/state/zip on the very next row --
-    # both parts get joined together into one field
-    "property_address": [
+    "street_address": [
         "//th[contains(.,'Property Address')]/following-sibling::td[1]",
-        "//th[contains(.,'Property Address')]/parent::tr/following-sibling::tr[1]/td[@class='bDat']",
     ],
     "appraised_value": "//th[contains(.,'Appraised Value')]/following-sibling::td[1]",
     "opening_bid": "//th[contains(.,'Opening Bid')]/following-sibling::td[1]",
@@ -47,9 +44,8 @@ CASE_FIELDS = {
     "auction_sold": "//div[@class='ASTAT_MSGB Astat_DATA']",
     "amount": "//div[@class='ASTAT_MSGD Astat_DATA']",
 }
-SHEET_COLUMNS = ["case_id", "case_url", "auction_date"] + list(CASE_FIELDS.keys()) + ["scraped_date"]
-
-MAX_CASE_LIST_PAGES = 50  # safety cap so the case-list pagination loop can't run forever
+ROW_ADDRESS_XPATH = "//th[contains(.,'Property Address')]/parent::tr/following-sibling::tr[1]/td[@class='bDat']"
+SHEET_COLUMNS = ["case_id", "case_url", "auction_date"] + list(CASE_FIELDS.keys()) + ["city", "state", "zip", "scraped_date"]
 
 
 async def human_wait(min_sec=1.0, max_sec=2.5):
@@ -95,21 +91,34 @@ async def safe_text(page, xpath, timeout=3000):
     """Return the inner text of the first match for an xpath on `page`, or '' if not found in time."""
     return await locator_text(page.locator(f"xpath={xpath}").first, timeout=timeout)
 
+def split_city_state_zip(addr):
+    if not addr:
+        return "", "", ""
+    # collapse newlines/extra whitespace scraped from the page. Format is
+    # always "City, ST 43215" -- comma after city, state as 2 capital
+    # letters, zip as digits only.
+    cleaned = re.sub(r"\s+", " ", addr.strip())
+    m = re.match(r"^(.*?),\s*([A-Z]{2})\s+(\d+)$", cleaned)
+    if not m:
+        logger.warning(f"Could not parse city/state/zip from address: {addr!r}")
+        return "", "", ""
+    city, state, zip_code = m.groups()
+    return city, state.upper(), zip_code
+
 
 async def extract_case_details(case_page):
     details = {}
     for field, xpaths in CASE_FIELDS.items():
         xpaths = xpaths if isinstance(xpaths, list) else [xpaths]
-
-        # for a single xpath this is just that one value; for a list, every
-        # non-empty part gets joined together (e.g. street + city/state/zip)
         parts = [await safe_text(case_page, xp) for xp in xpaths]
         value = ", ".join(p for p in parts if p)
         if field == "defendant":
-            value = value.replace(", et al.", "")
+            value = value.replace(" , et al.", "")
         details[field] = value
-    return details
 
+    row_address = await safe_text(case_page, ROW_ADDRESS_XPATH)
+    details["city"], details["state"], details["zip"] = split_city_state_zip(row_address)
+    return details
 
 def connect_google_sheet(tab_name):
     """
@@ -246,7 +255,7 @@ async def collect_all_cases_for_day(page):
     all_cases = []
     page_num = 1
 
-    while page_num <= MAX_CASE_LIST_PAGES:
+    while True:
         all_cases.extend(await collect_case_links(page))
 
         max_pages = await get_case_list_max_pages(page)
